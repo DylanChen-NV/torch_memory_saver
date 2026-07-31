@@ -191,7 +191,34 @@ namespace CUDAUtils {
             prop.allocFlags.gpuDirectRDMACapable = 1;
         }
 
-        CURESULT_CHECK(cuMemCreate(alloc_handle, size, &prop, 0));
+        const char* shareable_handle =
+            std::getenv("TMS_CUMEM_ENABLE_SHAREABLE_HANDLE");
+        const bool enable_shareable_handle =
+            shareable_handle != nullptr && shareable_handle[0] == '1' &&
+            shareable_handle[1] == '\0';
+        int fabric_supported = 0;
+        if (enable_shareable_handle) {
+            CUresult fabric_result = cuDeviceGetAttribute(
+                &fabric_supported,
+                CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED,
+                device);
+            if (fabric_result == CUDA_SUCCESS && fabric_supported) {
+                prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
+            } else {
+                prop.requestedHandleTypes =
+                    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            }
+        }
+
+        CUresult result = cuMemCreate(alloc_handle, size, &prop, 0);
+        if (enable_shareable_handle && fabric_supported &&
+            (result == CUDA_ERROR_NOT_PERMITTED ||
+             result == CUDA_ERROR_NOT_SUPPORTED)) {
+            prop.requestedHandleTypes =
+                CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            result = cuMemCreate(alloc_handle, size, &prop, 0);
+        }
+        CURESULT_CHECK(result);
     }
 
     static void cu_mem_set_access(void *ptr, size_t size, CUdevice device) {
