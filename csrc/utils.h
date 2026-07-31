@@ -148,6 +148,25 @@ namespace CUDAUtils {
             prop.allocFlags.gpuDirectRDMACapable = 1;
         }
 
+        const char* shareable_handle =
+            std::getenv("TMS_CUMEM_ENABLE_SHAREABLE_HANDLE");
+        const bool enable_shareable_handle =
+            shareable_handle != nullptr && shareable_handle[0] == '1' &&
+            shareable_handle[1] == '\0';
+        if (enable_shareable_handle) {
+            int fabric_supported = 0;
+            CUresult fabric_result = cuDeviceGetAttribute(
+                &fabric_supported,
+                CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED,
+                device);
+            if (fabric_result == CUDA_SUCCESS && fabric_supported) {
+                prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
+            } else {
+                prop.requestedHandleTypes =
+                    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            }
+        }
+
         return prop;
     }
 
@@ -164,9 +183,16 @@ namespace CUDAUtils {
     }
 
     static cudaError_t cu_mem_create(CUmemGenericAllocationHandle *alloc_handle, size_t allocation_size, CUdevice device) {
-        const CUmemAllocationProp prop = cu_mem_get_allocation_prop(device);
+        CUmemAllocationProp prop = cu_mem_get_allocation_prop(device);
 
         CUresult ret = cuMemCreate(alloc_handle, allocation_size, &prop, 0);
+        if (prop.requestedHandleTypes == CU_MEM_HANDLE_TYPE_FABRIC &&
+            (ret == CUDA_ERROR_NOT_PERMITTED ||
+             ret == CUDA_ERROR_NOT_SUPPORTED)) {
+            prop.requestedHandleTypes =
+                CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+            ret = cuMemCreate(alloc_handle, allocation_size, &prop, 0);
+        }
         if (ret == CUDA_ERROR_OUT_OF_MEMORY) {
             std::cerr << "[torch_memory_saver.cpp] cuMemCreate CUDA_ERROR_OUT_OF_MEMORY (may not be an issue e.g. torch allocator will free cache and retry)" << std::endl;
             return cudaErrorMemoryAllocation;
